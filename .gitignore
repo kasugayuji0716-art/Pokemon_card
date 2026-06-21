@@ -1,0 +1,10 @@
+# キャッシュ
+__pycache__/
+*.pyc
+.DS_Store
+
+# 学習データ（大きいのでgit管理外）
+model/train_X.npy
+model/train_y.npy
+
+# 学習済みweightsはgit管理する (model/weights.npz はコミット対象)
