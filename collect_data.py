@@ -1,6 +1,7 @@
 """
 自己対戦データ収集スクリプト
 v10ヒューリスティックで両者を動かし、(盤面特徴量, 勝敗ラベル) を収集する。
+複数デッキアーキタイプの対戦で多様なデータを収集する。
 
 使い方:
     python collect_data.py [--games 5000]
@@ -12,12 +13,71 @@ import numpy as np
 from cg.game import battle_start, battle_select, battle_finish
 from cg.api import to_observation_class, OptionType, SelectContext, AreaType
 
-DECK = (
+# ── デッキ定義 ────────────────────────────────────────────────────────────
+
+# 1. Fighting: Mega Lucario ex (v10 / 私たちのデッキ)
+DECK_FIGHTING = (
     [673] * 2 + [674] * 2 + [675] * 1 + [676] * 3 + [677] * 4 + [678] * 4
   + [1102] * 4 + [1123] * 2 + [1141] * 4 + [1142] * 4 + [1152] * 4
   + [1159] * 1 + [1182] * 2 + [1192] * 4 + [1227] * 4 + [1252] * 2
   + [6] * 13
 )
+
+# 2. Psychic: Alakazam / Dudunsparce (Soraice deck - リプレイ実測)
+DECK_PSYCHIC_ALAKAZAM = (
+    [65] * 4 + [66] * 4 + [741] * 4 + [742] * 4 + [743] * 3
+  + [1079] * 3 + [1081] * 3 + [1086] * 4 + [1097] * 1 + [1129] * 1
+  + [1146] * 1 + [1152] * 4 + [1159] * 1 + [1182] * 3 + [1184] * 1
+  + [1225] * 4 + [1231] * 4 + [1264] * 4
+  + [5] * 3 + [19] * 4
+)
+
+# 3. Psychic: Alakazam / Dunsparce / Fezandipiti complex (ulaph4 deck - リプレイ実測)
+DECK_PSYCHIC_COMPLEX = (
+    [66] * 3 + [140] * 1 + [305] * 3 + [343] * 1
+  + [741] * 4 + [742] * 4 + [743] * 3
+  + [1079] * 3 + [1081] * 2 + [1086] * 4 + [1097] * 1 + [1129] * 1
+  + [1146] * 1 + [1152] * 4 + [1182] * 3 + [1184] * 1 + [1186] * 1
+  + [1225] * 4 + [1231] * 4 + [1248] * 4 + [1264] * 1
+  + [5] * 2 + [13] * 1 + [19] * 4
+)
+
+# 4. Grass/Psychic: Dudunsparce / 878-line (persn deck - リプレイ実測)
+DECK_GRASS_SUSTAIN = (
+    [65] * 4 + [66] * 3 + [304] * 2 + [878] * 4 + [879] * 2
+  + [1086] * 4 + [1097] * 3 + [1115] * 3 + [1122] * 4 + [1152] * 4
+  + [1171] * 4 + [1182] * 2 + [1194] * 2 + [1210] * 2 + [1227] * 4 + [1255] * 4
+  + [11] * 4 + [12] * 1 + [19] * 4
+)
+
+# 5. Grass/Fire: 352-354 line (llkarill deck - リプレイ実測)
+DECK_GRASS_FIRE = (
+    [65] * 4 + [66] * 4 + [352] * 4 + [353] * 4 + [354] * 4
+  + [1079] * 2 + [1086] * 4 + [1114] * 1 + [1121] * 4 + [1122] * 4
+  + [1129] * 1 + [1152] * 4 + [1182] * 2 + [1215] * 4 + [1224] * 2 + [1227] * 4
+  + [2] * 7 + [12] * 1
+)
+
+# 6. Lightning/Water: YT deck (22 energy ramp - リプレイ実測)
+DECK_LIGHTNING = (
+    [265] * 3 + [268] * 3 + [269] * 3 + [270] * 3 + [271] * 3
+  + [1086] * 3 + [1097] * 2 + [1110] * 1 + [1118] * 1 + [1121] * 3
+  + [1152] * 2 + [1227] * 4 + [1233] * 4 + [1254] * 3
+  + [4] * 22
+)
+
+# 使用するデッキプール (メタ比率を反映した重み)
+# Fighting 43%, Psychic 20%, その他 37%
+DECKS = [
+    DECK_FIGHTING,          # 3票 (43%)
+    DECK_FIGHTING,
+    DECK_FIGHTING,
+    DECK_PSYCHIC_ALAKAZAM,  # 1票 (14%)
+    DECK_PSYCHIC_COMPLEX,   # 1票 (14%)
+    DECK_GRASS_SUSTAIN,     # 1票 (14%)
+    DECK_GRASS_FIRE,        # 0.5票
+    DECK_LIGHTNING,         # 0.5票
+]
 
 MEGA_LUCARIO_ID = 678
 FEATURE_DIM = 25
@@ -180,9 +240,9 @@ def _score_options(obs):
     return scores
 
 
-def heuristic_action(obs):
+def heuristic_action(obs, fallback_deck=None):
     if obs.select is None:
-        return list(DECK)
+        return list(fallback_deck or DECK_FIGHTING)
     options = obs.select.option
     n       = len(options)
     scores  = _score_options(obs)
@@ -194,14 +254,16 @@ def heuristic_action(obs):
 
 def run_game():
     """
-    1試合を v10 同士で回す。
+    ランダムに2つのデッキを選んで1試合を実行。
     Returns:
         records: list of (features, player_idx)  各決定ステップの記録
         winner:  0 or 1  勝者プレイヤーインデックス (-1 = 未決)
     """
+    deck0 = random.choice(DECKS)
+    deck1 = random.choice(DECKS)
     try:
-        obs_dict, _ = battle_start(list(DECK), list(DECK))
-    except Exception as e:
+        obs_dict, _ = battle_start(list(deck0), list(deck1))
+    except Exception:
         return [], -1
 
     records = []
@@ -231,9 +293,9 @@ def run_game():
             if feats is not None:
                 records.append((feats, obs.current.yourIndex))
 
-        # 行動選択
+        # 行動選択 (select=None時のフォールバックデッキはdeck0を使用)
         try:
-            action   = heuristic_action(obs)
+            action   = heuristic_action(obs, fallback_deck=deck0)
             obs_dict = battle_select(action)
         except Exception:
             break
