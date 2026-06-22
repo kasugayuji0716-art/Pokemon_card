@@ -279,43 +279,62 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
 
             if verbose and chosen_opt:
                 try:
-                    opt_type = getattr(chosen_opt.type, 'name', '?')
+                    # カード名ヘルパー
+                    def _opt_card_name(opt):
+                        cid = getattr(opt, 'cardId', None)
+                        if cid and cid in CARD_DB:
+                            return CARD_DB[cid].name
+                        return None
 
-                    # アクション内容を日本語で表示
+                    def _effect_card_name():
+                        """SelectData.effect / contextCard からカード名を取得"""
+                        sel = obs.select
+                        for attr in ('effect', 'contextCard'):
+                            card = getattr(sel, attr, None)
+                            if card and hasattr(card, 'id') and card.id in CARD_DB:
+                                return CARD_DB[card.id].name
+                        return None
+
+                    def _atk_name(opt):
+                        aid = getattr(opt, 'attackId', None)
+                        if aid and aid in ATTACK_DB:
+                            return ATTACK_DB[aid].name
+                        return None
+
                     action_desc = ""
                     if chosen_opt.type == OptionType.EVOLVE:
-                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
-                        name = cd.name if cd else "?"
+                        name = _opt_card_name(chosen_opt) or _effect_card_name() or "?"
                         action_desc = f"⬆ 進化: {name}"
                     elif chosen_opt.type == OptionType.PLAY:
-                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
-                        name = cd.name if cd else "?"
-                        # グッズ/サポート判別
+                        name = _opt_card_name(chosen_opt) or _effect_card_name() or "?"
                         action_desc = f"🃏 使用: {name}"
                     elif chosen_opt.type == OptionType.ATTACH:
-                        target = ""
-                        if getattr(chosen_opt, 'inPlayArea', None) == AreaType.ACTIVE:
-                            target = "アクティブ"
-                        else:
-                            target = "ベンチ"
+                        target = "アクティブ" if getattr(chosen_opt, 'inPlayArea', None) == AreaType.ACTIVE else "ベンチ"
                         poke = _get_pokemon(state, chosen_opt.inPlayArea,
                                            getattr(chosen_opt, 'inPlayIndex', None), player_idx)
-                        pname = CARD_DB.get(poke.id).name if (poke and CARD_DB.get(poke.id)) else "?"
+                        pname = CARD_DB[poke.id].name if (poke and poke.id in CARD_DB) else "?"
                         action_desc = f"⚡ エネ付与 → {pname}({target})"
                     elif chosen_opt.type == OptionType.ATTACK:
-                        action_desc = f"⚔ 攻撃！"
+                        aname = _atk_name(chosen_opt) or "?"
+                        action_desc = f"⚔ 攻撃: {aname}"
                     elif chosen_opt.type == OptionType.RETREAT:
                         action_desc = f"🏃 にげる！"
                     elif chosen_opt.type == OptionType.ABILITY:
-                        action_desc = f"✨ 特性使用"
+                        name = _effect_card_name() or "?"
+                        action_desc = f"✨ 特性: {name}"
                     elif chosen_opt.type == OptionType.END:
                         action_desc = f"⏹ ターン終了"
                     elif chosen_opt.type == OptionType.CARD:
-                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
-                        name = cd.name if cd else "?"
+                        name = _opt_card_name(chosen_opt) or "?"
                         ctx = getattr(obs.select, 'context', None)
                         ctx_name = getattr(ctx, 'name', '') if ctx else ''
-                        action_desc = f"🎯 カード選択: {name} ({ctx_name})"
+                        if name != "?":
+                            action_desc = f"  📎 選択: {name}"
+                        # カード名不明の選択は非表示（ノイズ削減）
+                    elif chosen_opt.type in (OptionType.YES, OptionType.NO, OptionType.NUMBER):
+                        pass  # 非表示
+                    else:
+                        action_desc = ""
 
                     if action_desc:
                         print(f"  {player_name}: {action_desc}")
