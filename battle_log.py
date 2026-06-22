@@ -61,11 +61,12 @@ DECK_FIGHTING = (
 )
 
 DECK_PSYCHIC = (
-    [65]*4 + [66]*4 + [741]*4 + [742]*4 + [743]*3
-  + [1079]*3 + [1081]*3 + [1086]*4 + [1097]*1 + [1129]*1
-  + [1146]*1 + [1152]*4 + [1159]*1 + [1182]*3 + [1184]*1
-  + [1225]*4 + [1231]*4 + [1264]*4
-  + [5]*3 + [19]*4
+    [741]*4 + [742]*4 + [743]*4  # Abra→Kadabra→Alakazam
+  + [305]*4 + [66]*4             # Dunsparce→Dudunsparce
+  + [1079]*4 + [1081]*3 + [1086]*4 + [1097]*2 + [1129]*2
+  + [1152]*4 + [1155]*1 + [1156]*2 + [1182]*2 + [1184]*1
+  + [1225]*3 + [1231]*4
+  + [5]*4 + [19]*4
 )
 
 DECK_GRASS = (
@@ -76,6 +77,7 @@ DECK_GRASS = (
 )
 
 MEGA_LUCARIO_ID = 678
+ALAKAZAM_ID = 743
 
 # ── パラメータ定義 ────────────────────────────────────────────────────────
 
@@ -311,55 +313,54 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--games', type=int, default=5)
-    parser.add_argument('--opp-deck', type=str, default='fighting',
+    parser.add_argument('--deck-a', type=str, default='psychic',
+                        choices=['fighting', 'psychic', 'grass'])
+    parser.add_argument('--deck-b', type=str, default='fighting',
                         choices=['fighting', 'psychic', 'grass'])
     args = parser.parse_args()
 
-    global V16_PARAMS
-    V16_PARAMS = load_v16_params()
-    if V16_PARAMS is None:
-        print("model/best_params.json が見つかりません")
-        return
-
-    opp_decks = {
-        'fighting': DECK_FIGHTING,
-        'psychic': DECK_PSYCHIC,
-        'grass': DECK_GRASS,
+    deck_map = {
+        'fighting': (DECK_FIGHTING, MEGA_LUCARIO_ID),
+        'psychic':  (DECK_PSYCHIC,  ALAKAZAM_ID),
+        'grass':    (DECK_GRASS,    None),
     }
-    opp_deck = opp_decks[args.opp_deck]
+    deck_a, attacker_a = deck_map[args.deck_a]
+    deck_b, attacker_b = deck_map[args.deck_b]
 
-    print(f"=== v16(進化パラメータ) vs v10(デフォルト) ===")
-    print(f"デッキ: v16=Fighting, v10={args.opp_deck}")
+    # メインアタッカーIDに応じたパラメータ
+    params_a = dict(V10_PARAMS)
+    params_b = dict(V10_PARAMS)
+
+    print(f"=== {args.deck_a} vs {args.deck_b} (両方v10ヒューリスティック) ===")
     print(f"試合数: {args.games}\n")
 
-    v16_wins = 0
-    v10_wins = 0
+    a_wins = 0
+    b_wins = 0
 
     for game_i in range(args.games):
         print(f"\n{'='*60}")
         print(f"Game {game_i+1}/{args.games}")
         print(f"{'='*60}")
 
-        # 先攻後攻をランダムに
         if random.random() < 0.5:
             winner = run_logged_game(
-                V16_PARAMS, "v16", DECK_FIGHTING,
-                V10_PARAMS, "v10", opp_deck
+                params_a, args.deck_a, deck_a,
+                params_b, args.deck_b, deck_b
             )
-            if winner == 0: v16_wins += 1
-            elif winner == 1: v10_wins += 1
+            if winner == 0: a_wins += 1
+            elif winner == 1: b_wins += 1
         else:
             winner = run_logged_game(
-                V10_PARAMS, "v10", opp_deck,
-                V16_PARAMS, "v16", DECK_FIGHTING
+                params_b, args.deck_b, deck_b,
+                params_a, args.deck_a, deck_a
             )
-            if winner == 0: v10_wins += 1
-            elif winner == 1: v16_wins += 1
+            if winner == 0: b_wins += 1
+            elif winner == 1: a_wins += 1
 
     print(f"\n{'='*60}")
-    print(f"結果: v16 {v16_wins}勝 - v10 {v10_wins}勝 "
-          f"({args.games - v16_wins - v10_wins}引分)")
-    print(f"v16勝率: {v16_wins / max(v16_wins + v10_wins, 1):.1%}")
+    print(f"結果: {args.deck_a} {a_wins}勝 - {args.deck_b} {b_wins}勝 "
+          f"({args.games - a_wins - b_wins}引分)")
+    print(f"{args.deck_a}勝率: {a_wins / max(a_wins + b_wins, 1):.1%}")
 
 
 if __name__ == '__main__':
