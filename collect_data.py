@@ -75,7 +75,7 @@ DECKS = [
     DECK_LIGHTNING,                                 # 7.5%
 ]
 
-FEATURE_DIM = 96
+FEATURE_DIM = 100
 
 
 # ── カードDB構築（起動時1回だけ） ─────────────────────────────────────────
@@ -181,6 +181,31 @@ def _weakness_match(attacker, defender):
         return False
     return acd.energyType == dcd.weakness
 
+def _max_evolution_stats(pokemon):
+    """最終進化形のmaxHPと最大攻撃力を返す（ふしぎのアメ込み）"""
+    cd = _get_card_data(pokemon)
+    if cd is None:
+        return 0, 0
+    best_hp  = cd.hp
+    best_dmg = _best_attack_damage(pokemon)
+    name = cd.name
+    for _ in range(3):  # basic→stage1→stage2→mega (最大3段階)
+        found = False
+        for c in CARD_DB.values():
+            if c.evolvesFrom == name:
+                best_hp = max(best_hp, c.hp)
+                for aid in (c.attacks or []):
+                    atk = ATTACK_DB.get(aid)
+                    if atk:
+                        best_dmg = max(best_dmg, atk.damage)
+                name = c.name
+                found = True
+                break
+        if not found:
+            break
+    return best_hp, best_dmg
+
+
 def _prize_risk(pokemon):
     """撃破時に相手が得るサイド枚数 (0=不在/None, 1=通常, 2=ex, 3=megaEx)"""
     if pokemon is None:
@@ -209,7 +234,8 @@ def extract_features(obs):
       グローバル:      サイド,手札,デッキ,捨札,ベンチ数,ターン等           (23)
       戦術:           攻撃力,攻撃可否,弱点,KO判定,サイドリスク,退却コスト  (11)
       戦略:           ベンチ攻撃準備,KO計画,ボス枚数,進化手札,相手進化     (15)
-      合計 = 96
+      予測:           進化ポテンシャル(HP,攻撃力)×自分相手                (4)
+      合計 = 100
     """
     state = obs.current
     if state is None:
@@ -393,6 +419,29 @@ def extract_features(obs):
     for i in range(5):
         ob = opp_bench[i] if i < len(opp_bench) else None
         feats.append(1.0 if (ob and getattr(ob, 'preEvolution', None)) else 0.0)
+
+    # F. 進化ポテンシャル (50-53) — ベンチの将来脅威度
+    # 相手ベンチの最大進化ポテンシャル (maxHP, 攻撃力)
+    opp_best_evo_hp, opp_best_evo_dmg = 0, 0
+    for ob in (opp_bench or []):
+        if ob is None:
+            continue
+        hp, dmg = _max_evolution_stats(ob)
+        opp_best_evo_hp  = max(opp_best_evo_hp, hp)
+        opp_best_evo_dmg = max(opp_best_evo_dmg, dmg)
+    feats.append(min(opp_best_evo_hp,  350) / 350.0)
+    feats.append(min(opp_best_evo_dmg, 350) / 350.0)
+
+    # 自分ベンチの最大進化ポテンシャル (maxHP, 攻撃力)
+    our_best_evo_hp, our_best_evo_dmg = 0, 0
+    for b in (bench or []):
+        if b is None:
+            continue
+        hp, dmg = _max_evolution_stats(b)
+        our_best_evo_hp  = max(our_best_evo_hp, hp)
+        our_best_evo_dmg = max(our_best_evo_dmg, dmg)
+    feats.append(min(our_best_evo_hp,  350) / 350.0)
+    feats.append(min(our_best_evo_dmg, 350) / 350.0)
 
     assert len(feats) == FEATURE_DIM, f"feature dim mismatch: {len(feats)}"
     return feats

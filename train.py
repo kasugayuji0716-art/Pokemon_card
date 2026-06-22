@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-FEATURE_DIM = 96
+FEATURE_DIM = 100
 
 
 def build_model(input_dim):
