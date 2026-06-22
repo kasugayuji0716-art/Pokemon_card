@@ -1,10 +1,10 @@
 """
-自己対戦データ収集スクリプト
-v10ヒューリスティックで両者を動かし、(盤面特徴量, 勝敗ラベル) を収集する。
+自己対戦データ収集スクリプト v2
+v10ヒューリスティックで両者を動かし、(盤面特徴量, 勝敗ラベル, 重み) を収集する。
 複数デッキアーキタイプの対戦で多様なデータを収集する。
 
 使い方:
-    python collect_data.py [--games 5000]
+    python collect_data.py [--games 20000]
 """
 import argparse
 import random
@@ -23,7 +23,7 @@ DECK_FIGHTING = (
   + [6] * 13
 )
 
-# 2. Psychic: Alakazam / Dudunsparce (Soraice deck - リプレイ実測)
+# 2. Psychic: Alakazam / Dudunsparce (Soraice deck)
 DECK_PSYCHIC_ALAKAZAM = (
     [65] * 4 + [66] * 4 + [741] * 4 + [742] * 4 + [743] * 3
   + [1079] * 3 + [1081] * 3 + [1086] * 4 + [1097] * 1 + [1129] * 1
@@ -32,7 +32,7 @@ DECK_PSYCHIC_ALAKAZAM = (
   + [5] * 3 + [19] * 4
 )
 
-# 3. Psychic: Alakazam / Dunsparce / Fezandipiti complex (ulaph4 deck - リプレイ実測)
+# 3. Psychic: Alakazam / Dunsparce / Fezandipiti complex (ulaph4 deck)
 DECK_PSYCHIC_COMPLEX = (
     [66] * 3 + [140] * 1 + [305] * 3 + [343] * 1
   + [741] * 4 + [742] * 4 + [743] * 3
@@ -42,7 +42,7 @@ DECK_PSYCHIC_COMPLEX = (
   + [5] * 2 + [13] * 1 + [19] * 4
 )
 
-# 4. Grass/Psychic: Dudunsparce / 878-line (persn deck - リプレイ実測)
+# 4. Grass/Psychic: Dudunsparce / 878-line (persn deck)
 DECK_GRASS_SUSTAIN = (
     [65] * 4 + [66] * 3 + [304] * 2 + [878] * 4 + [879] * 2
   + [1086] * 4 + [1097] * 3 + [1115] * 3 + [1122] * 4 + [1152] * 4
@@ -50,7 +50,7 @@ DECK_GRASS_SUSTAIN = (
   + [11] * 4 + [12] * 1 + [19] * 4
 )
 
-# 5. Grass/Fire: 352-354 line (llkarill deck - リプレイ実測)
+# 5. Grass/Fire: 352-354 line (llkarill deck)
 DECK_GRASS_FIRE = (
     [65] * 4 + [66] * 4 + [352] * 4 + [353] * 4 + [354] * 4
   + [1079] * 2 + [1086] * 4 + [1114] * 1 + [1121] * 4 + [1122] * 4
@@ -58,7 +58,7 @@ DECK_GRASS_FIRE = (
   + [2] * 7 + [12] * 1
 )
 
-# 6. Lightning/Water: YT deck (22 energy ramp - リプレイ実測)
+# 6. Lightning/Water: YT deck (22 energy ramp)
 DECK_LIGHTNING = (
     [265] * 3 + [268] * 3 + [269] * 3 + [270] * 3 + [271] * 3
   + [1086] * 3 + [1097] * 2 + [1110] * 1 + [1118] * 1 + [1121] * 3
@@ -66,64 +66,46 @@ DECK_LIGHTNING = (
   + [4] * 22
 )
 
-# 使用するデッキプール (メタ比率を反映した重み)
-# Fighting 43%, Psychic 20%, その他 37%
 DECKS = [
-    DECK_FIGHTING,          # 3票 (43%)
-    DECK_FIGHTING,
-    DECK_FIGHTING,
-    DECK_PSYCHIC_ALAKAZAM,  # 1票 (14%)
-    DECK_PSYCHIC_COMPLEX,   # 1票 (14%)
-    DECK_GRASS_SUSTAIN,     # 1票 (14%)
-    DECK_GRASS_FIRE,        # 0.5票
-    DECK_LIGHTNING,         # 0.5票
+    DECK_FIGHTING, DECK_FIGHTING, DECK_FIGHTING,   # 43%
+    DECK_PSYCHIC_ALAKAZAM,                          # 14%
+    DECK_PSYCHIC_COMPLEX,                           # 14%
+    DECK_GRASS_SUSTAIN,                             # 14%
+    DECK_GRASS_FIRE,                                # 7.5%
+    DECK_LIGHTNING,                                 # 7.5%
 ]
 
-MEGA_LUCARIO_ID = 678
 FEATURE_DIM = 70
 
 
-# ── ポケモン特徴量ヘルパー ────────────────────────────────────────────────
+# ── カードID分類ヘルパー ──────────────────────────────────────────────────
 
-def _poke_feats_full(p):
-    """ポケモン1体 → 5次元 [HP割合, エネ数, maxHP, 進化済み, EX級]"""
-    if p is None:
-        return [0.0, 0.0, 0.0, 0.0, 0.0]
-    return [
-        p.hp / p.maxHp if p.maxHp > 0 else 0.0,
-        min(len(p.energies), 5) / 5.0,
-        min(p.maxHp, 300) / 300.0,
-        1.0 if getattr(p, 'preEvolution', None) else 0.0,
-        1.0 if p.maxHp >= 150 else 0.0,
-    ]
+def _is_pokemon(cid):  return 21 <= cid <= 999
+def _is_trainer(cid):  return cid >= 1000
+def _is_energy(cid):   return cid <= 20
 
-def _poke_feats_short(p):
-    """ポケモン1体 → 3次元 [HP割合, エネ数, maxHP]"""
-    if p is None:
-        return [0.0, 0.0, 0.0]
-    return [
-        p.hp / p.maxHp if p.maxHp > 0 else 0.0,
-        min(len(p.energies), 5) / 5.0,
-        min(p.maxHp, 300) / 300.0,
-    ]
+def _card_composition(cards):
+    """カードリスト → (ポケモン数, トレーナー数, エネルギー数)"""
+    if not cards:
+        return 0, 0, 0
+    poke = sum(1 for c in cards if hasattr(c, 'id') and _is_pokemon(c.id))
+    trainer = sum(1 for c in cards if hasattr(c, 'id') and _is_trainer(c.id))
+    energy = sum(1 for c in cards if hasattr(c, 'id') and _is_energy(c.id))
+    return poke, trainer, energy
 
 
 # ── 特徴量抽出 ─────────────────────────────────────────────────────────────
 
 def extract_features(obs):
     """
-    現在の盤面を70次元のfloat32ベクトルに変換する。
-    obs.current.yourIndex を「現在選択する側」とみなす。
+    現在の盤面を70次元のfloat32ベクトルに変換。
 
     内訳:
-      自分アクティブ:  HP割合, エネ数, maxHP, 進化, EX, ツール, 状態異常×2  (8)
-      自分ベンチ×5:    HP割合, エネ数, maxHP, 進化, EX                     (25)
-      相手アクティブ:  HP割合, エネ数, maxHP, 進化, EX, 状態異常            (6)
-      相手ベンチ×5:    HP割合, エネ数, maxHP                               (15)
-      グローバル:      サイド×2, 手札数×2, デッキ数×2, 捨て×2,
-                      ベンチ数×2, エネ付与済, スタジアム,
-                      手札ポケモン数, 手札トレーナー数, 手札エネ数,
-                      ゲーム進行度                                         (16)
+      自分アクティブ:  HP, エネ, maxHP, 進化, ツール, 状態×2        (7)
+      自分ベンチ×5:    HP, エネ, maxHP, 進化                        (20)
+      相手アクティブ:  HP, エネ, maxHP, 進化, 状態                   (5)
+      相手ベンチ×5:    HP, エネ, maxHP                               (15)
+      グローバル:      23項目                                        (23)
       合計 = 70
     """
     state = obs.current
@@ -137,60 +119,86 @@ def extract_features(obs):
 
     feats = []
 
-    # --- 自分のアクティブ (8次元) ---
+    # --- 自分のアクティブ (7次元) ---
     a = us.active[0] if us.active else None
-    feats += _poke_feats_full(a)
     feats += [
-        min(len(getattr(a, 'tools', []) or []), 2) / 2.0 if a else 0.0,
-        1.0 if getattr(us, 'asleep', False) or getattr(us, 'confused', False)
-              or getattr(us, 'paralyzed', False) else 0.0,
-        1.0 if getattr(us, 'poisoned', False) or getattr(us, 'burned', False) else 0.0,
+        a.hp / a.maxHp if (a and a.maxHp > 0) else 0.0,
+        min(len(a.energies), 8) / 8.0 if a else 0.0,
+        min(getattr(a, 'maxHp', 0), 300) / 300.0 if a else 0.0,
+        1.0 if (a and getattr(a, 'preEvolution', None)) else 0.0,
+        min(len(getattr(a, 'tools', None) or []), 2) / 2.0 if a else 0.0,
+        1.0 if (getattr(us, 'asleep', False) or getattr(us, 'confused', False)
+                or getattr(us, 'paralyzed', False)) else 0.0,
+        1.0 if (getattr(us, 'poisoned', False)
+                or getattr(us, 'burned', False)) else 0.0,
     ]
 
-    # --- 自分のベンチ 5体 (25次元) ---
+    # --- 自分のベンチ 5体 (20次元) ---
     bench = us.bench or []
     for i in range(5):
         b = bench[i] if i < len(bench) else None
-        feats += _poke_feats_full(b)
+        feats += [
+            b.hp / b.maxHp if (b and b.maxHp > 0) else 0.0,
+            min(len(b.energies), 8) / 8.0 if b else 0.0,
+            min(getattr(b, 'maxHp', 0), 300) / 300.0 if b else 0.0,
+            1.0 if (b and getattr(b, 'preEvolution', None)) else 0.0,
+        ]
 
-    # --- 相手のアクティブ (6次元) ---
+    # --- 相手のアクティブ (5次元) ---
     oa = opp.active[0] if opp.active else None
-    feats += _poke_feats_full(oa)
     feats += [
-        1.0 if getattr(opp, 'asleep', False) or getattr(opp, 'confused', False)
-              or getattr(opp, 'paralyzed', False) or getattr(opp, 'poisoned', False)
-              or getattr(opp, 'burned', False) else 0.0,
+        oa.hp / oa.maxHp if (oa and oa.maxHp > 0) else 0.0,
+        min(len(oa.energies), 8) / 8.0 if oa else 0.0,
+        min(getattr(oa, 'maxHp', 0), 300) / 300.0 if oa else 0.0,
+        1.0 if (oa and getattr(oa, 'preEvolution', None)) else 0.0,
+        1.0 if (getattr(opp, 'asleep', False) or getattr(opp, 'confused', False)
+                or getattr(opp, 'paralyzed', False) or getattr(opp, 'poisoned', False)
+                or getattr(opp, 'burned', False)) else 0.0,
     ]
 
     # --- 相手のベンチ 5体 (15次元) ---
     opp_bench = opp.bench or []
     for i in range(5):
         ob = opp_bench[i] if i < len(opp_bench) else None
-        feats += _poke_feats_short(ob)
+        feats += [
+            ob.hp / ob.maxHp if (ob and ob.maxHp > 0) else 0.0,
+            min(len(ob.energies), 8) / 8.0 if ob else 0.0,
+            min(getattr(ob, 'maxHp', 0), 300) / 300.0 if ob else 0.0,
+        ]
 
-    # --- グローバル (16次元) ---
+    # --- グローバル (23次元) ---
     our_hand = getattr(us, 'hand', None) or []
-    n_pokemon_hand = sum(1 for c in our_hand if hasattr(c, 'id') and 21 <= c.id <= 999) / 10.0
-    n_trainer_hand = sum(1 for c in our_hand if hasattr(c, 'id') and c.id >= 1000) / 10.0
-    n_energy_hand  = sum(1 for c in our_hand if hasattr(c, 'id') and c.id <= 20) / 10.0
+    h_poke, h_trainer, h_energy = _card_composition(our_hand)
+
+    our_discard = us.discard or []
+    opp_discard = opp.discard or []
+    d_poke, d_trainer, d_energy = _card_composition(our_discard)
+    od_poke, od_trainer, od_energy = _card_composition(opp_discard)
 
     feats += [
-        len(us.prize)  / 6.0,
-        len(opp.prize) / 6.0,
-        min(getattr(us,  'handCount', 0), 10) / 10.0,
-        min(getattr(opp, 'handCount', 0), 10) / 10.0,
-        getattr(us,  'deckCount', 0) / 60.0,
-        getattr(opp, 'deckCount', 0) / 60.0,
-        len(us.discard  or []) / 60.0,
-        len(opp.discard or []) / 60.0,
-        len(bench)     / 5.0,
-        len(opp_bench) / 5.0,
-        1.0 if getattr(state, 'energyAttached', False) else 0.0,
-        1.0 if getattr(state, 'stadium', None) else 0.0,
-        n_pokemon_hand,
-        n_trainer_hand,
-        n_energy_hand,
-        min(len(us.discard or []) + len(opp.discard or []), 120) / 120.0,
+        len(us.prize)  / 6.0,                                          # 1
+        len(opp.prize) / 6.0,                                          # 2
+        min(getattr(us,  'handCount', 0), 10) / 10.0,                  # 3
+        min(getattr(opp, 'handCount', 0), 10) / 10.0,                  # 4
+        getattr(us,  'deckCount', 0) / 60.0,                           # 5
+        getattr(opp, 'deckCount', 0) / 60.0,                           # 6
+        len(our_discard) / 60.0,                                        # 7
+        len(opp_discard) / 60.0,                                        # 8
+        len(bench)     / 5.0,                                           # 9
+        len(opp_bench) / 5.0,                                           # 10
+        1.0 if getattr(state, 'energyAttached', False) else 0.0,        # 11
+        1.0 if getattr(state, 'stadium', None) else 0.0,                # 12
+        min(getattr(state, 'turn', 0), 30) / 30.0,                     # 13 ★新
+        1.0 if getattr(state, 'firstPlayer', 0) == our_idx else 0.0,   # 14 ★新
+        1.0 if getattr(state, 'supporterPlayed', False) else 0.0,      # 15 ★新
+        1.0 if getattr(state, 'retreated', False) else 0.0,            # 16 ★新
+        h_poke    / 10.0,                                               # 17
+        h_trainer / 10.0,                                               # 18
+        h_energy  / 10.0,                                               # 19
+        od_poke    / 30.0,                                              # 20 ★新
+        od_trainer / 30.0,                                              # 21 ★新
+        od_energy  / 30.0,                                              # 22 ★新
+        d_energy   / 30.0,                                              # 23 ★新
     ]
 
     assert len(feats) == FEATURE_DIM, f"feature dim mismatch: {len(feats)}"
@@ -214,6 +222,8 @@ def _get_pokemon(state, area, index, player_idx):
         pass
     return None
 
+
+MEGA_LUCARIO_ID = 678
 
 def _poke_score(poke):
     if poke is None:
@@ -305,7 +315,7 @@ def run_game():
     """
     ランダムに2つのデッキを選んで1試合を実行。
     Returns:
-        records: list of (features, player_idx)  各決定ステップの記録
+        records: list of (features, player_idx, step_idx)
         winner:  0 or 1  勝者プレイヤーインデックス (-1 = 未決)
     """
     deck0 = random.choice(DECKS)
@@ -316,14 +326,14 @@ def run_game():
         return [], -1
 
     records = []
+    step_idx = 0
 
-    for _ in range(2000):  # 最大ステップ数 (無限ループ防止)
+    for _ in range(2000):
         try:
             obs = to_observation_class(obs_dict)
         except Exception:
             break
 
-        # ゲーム終了確認
         if obs.current and getattr(obs.current, 'result', -1) >= 0:
             winner = obs.current.result
             try:
@@ -332,7 +342,6 @@ def run_game():
                 pass
             return records, winner
 
-        # 特徴量を記録（select がある & state が取れているステップのみ）
         if obs.current and obs.select:
             feats = None
             try:
@@ -340,9 +349,9 @@ def run_game():
             except Exception:
                 pass
             if feats is not None:
-                records.append((feats, obs.current.yourIndex))
+                records.append((feats, obs.current.yourIndex, step_idx))
+                step_idx += 1
 
-        # 行動選択 (select=None時のフォールバックデッキはdeck0を使用)
         try:
             action   = heuristic_action(obs, fallback_deck=deck0)
             obs_dict = battle_select(action)
@@ -360,11 +369,11 @@ def run_game():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--games', type=int, default=5000)
+    parser.add_argument('--games', type=int, default=20000)
     parser.add_argument('--out',   type=str, default='model')
     args = parser.parse_args()
 
-    all_X, all_y = [], []
+    all_X, all_y, all_w = [], [], []
     skip = 0
 
     print(f"{args.games} 試合を実行中...")
@@ -377,20 +386,27 @@ def main():
             skip += 1
             continue
 
-        for feats, player_idx in records:
+        total_steps = len(records)
+        for feats, player_idx, step_idx in records:
             label = 1.0 if player_idx == winner else 0.0
+            # ゲーム段階重み: 序盤0.2 → 終盤1.0 (終盤ほど信頼度が高い)
+            progress = step_idx / max(total_steps - 1, 1)
+            weight = 0.2 + 0.8 * progress
             all_X.append(feats)
             all_y.append(label)
+            all_w.append(weight)
 
     X = np.array(all_X, dtype=np.float32)
     y = np.array(all_y, dtype=np.float32)
+    w = np.array(all_w, dtype=np.float32)
 
     import os
     os.makedirs(args.out, exist_ok=True)
     np.save(f'{args.out}/train_X.npy', X)
     np.save(f'{args.out}/train_y.npy', y)
+    np.save(f'{args.out}/train_w.npy', w)
 
-    print(f"\n完了: {len(all_X)} サンプル保存 → {args.out}/train_X.npy")
+    print(f"\n完了: {len(all_X)} サンプル保存 → {args.out}/")
     print(f"勝率バランス: {y.mean():.3f} (0.5 に近いほど良い)")
     print(f"スキップ: {skip} 試合")
 
