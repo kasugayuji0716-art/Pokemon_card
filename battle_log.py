@@ -222,15 +222,18 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
             winner = state.result
             winner_name = name_0 if winner == 0 else name_1
             if verbose:
-                # 最終盤面
+                print(f"\n{'━'*50}")
+                print(f"  🏆 勝者: {winner_name}")
                 for pi in range(2):
                     ps = state.players[pi]
                     pname = name_0 if pi == 0 else name_1
                     a = ps.active[0] if ps.active else None
                     bench_count = len([b for b in (ps.bench or []) if b])
                     prize_left = len(ps.prize)
-                    print(f"  [{pname}] Prize:{prize_left} Active:{poke_str(a)} Bench:{bench_count}")
-                print(f"  ★ 勝者: {winner_name}")
+                    deck_left = ps.deckCount
+                    print(f"  [{pname}] サイド残:{prize_left} デッキ残:{deck_left} "
+                          f"バトル場:{poke_str(a)} ベンチ:{bench_count}体")
+                print(f"{'━'*50}")
             try:
                 battle_finish()
             except Exception:
@@ -249,8 +252,9 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
 
             if verbose and turn != last_turn:
                 last_turn = turn
-                # ターン開始時の盤面表示
-                print(f"\n--- Turn {turn} ({player_name}'s action) ---")
+                print(f"\n{'─'*50}")
+                print(f"ターン {turn}  ({player_name}の番)")
+                print(f"{'─'*50}")
                 for pi in range(2):
                     ps = state.players[pi]
                     pname = name_0 if pi == 0 else name_1
@@ -258,10 +262,13 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
                     bench_list = [poke_str(b) for b in (ps.bench or []) if b]
                     prize_left = len(ps.prize)
                     deck_left = ps.deckCount
-                    print(f"  [{pname}] Prize:{prize_left} Deck:{deck_left} "
-                          f"Active:{poke_str(a)}")
+                    hand_count = getattr(ps, 'handCount', '?')
+                    marker = "👉" if pi == player_idx else "  "
+                    print(f"{marker}[{pname}] サイド:{prize_left} デッキ:{deck_left} 手札:{hand_count}")
+                    print(f"    バトル場: {poke_str(a)}")
                     if bench_list:
-                        print(f"    Bench: {', '.join(bench_list)}")
+                        for bi, bs in enumerate(bench_list):
+                            print(f"    ベンチ{bi+1}: {bs}")
 
             # 行動選択
             scores = score_options(obs, params)
@@ -272,23 +279,46 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
 
             if verbose and chosen_opt:
                 try:
-                    opt_type = chosen_opt.type.name
-                    score_val = scores[chosen_idx]
+                    opt_type = getattr(chosen_opt.type, 'name', '?')
 
-                    opt_scores = []
-                    for ii, o in enumerate(options):
-                        try:
-                            opt_scores.append(f"{o.type.name}({scores[ii]:.0f})")
-                        except Exception:
-                            opt_scores.append(f"?({scores[ii]:.0f})")
+                    # アクション内容を日本語で表示
+                    action_desc = ""
+                    if chosen_opt.type == OptionType.EVOLVE:
+                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
+                        name = cd.name if cd else "?"
+                        action_desc = f"⬆ 進化: {name}"
+                    elif chosen_opt.type == OptionType.PLAY:
+                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
+                        name = cd.name if cd else "?"
+                        # グッズ/サポート判別
+                        action_desc = f"🃏 使用: {name}"
+                    elif chosen_opt.type == OptionType.ATTACH:
+                        target = ""
+                        if getattr(chosen_opt, 'inPlayArea', None) == AreaType.ACTIVE:
+                            target = "アクティブ"
+                        else:
+                            target = "ベンチ"
+                        poke = _get_pokemon(state, chosen_opt.inPlayArea,
+                                           getattr(chosen_opt, 'inPlayIndex', None), player_idx)
+                        pname = CARD_DB.get(poke.id).name if (poke and CARD_DB.get(poke.id)) else "?"
+                        action_desc = f"⚡ エネ付与 → {pname}({target})"
+                    elif chosen_opt.type == OptionType.ATTACK:
+                        action_desc = f"⚔ 攻撃！"
+                    elif chosen_opt.type == OptionType.RETREAT:
+                        action_desc = f"🏃 にげる！"
+                    elif chosen_opt.type == OptionType.ABILITY:
+                        action_desc = f"✨ 特性使用"
+                    elif chosen_opt.type == OptionType.END:
+                        action_desc = f"⏹ ターン終了"
+                    elif chosen_opt.type == OptionType.CARD:
+                        cd = CARD_DB.get(getattr(chosen_opt, 'cardId', None))
+                        name = cd.name if cd else "?"
+                        ctx = getattr(obs.select, 'context', None)
+                        ctx_name = getattr(ctx, 'name', '') if ctx else ''
+                        action_desc = f"🎯 カード選択: {name} ({ctx_name})"
 
-                    # 重要な選択のみ表示
-                    if chosen_opt.type in (OptionType.ATTACK, OptionType.RETREAT,
-                                            OptionType.EVOLVE, OptionType.ABILITY,
-                                            OptionType.ATTACH, OptionType.END):
-                        print(f"  → {player_name}: {opt_type} (score:{score_val:.0f})")
-                        if len(opt_scores) <= 10:
-                            print(f"    候補: {', '.join(opt_scores)}")
+                    if action_desc:
+                        print(f"  {player_name}: {action_desc}")
                 except Exception:
                     pass
 
