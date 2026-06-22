@@ -269,20 +269,26 @@ def run_logged_game(params_0, name_0, deck_0, params_1, name_1, deck_1, verbose=
             chosen_opt = options[chosen_idx] if chosen_idx < n else None
 
             if verbose and chosen_opt:
-                opt_type = chosen_opt.type.name
-                score_val = scores[chosen_idx]
+                try:
+                    opt_type = chosen_opt.type.name
+                    score_val = scores[chosen_idx]
 
-                # 選択肢の概要
-                opt_types = [o.type.name for o in options]
-                opt_scores = [f"{o.type.name}({scores[i]:.0f})" for i, o in enumerate(options)]
+                    opt_scores = []
+                    for ii, o in enumerate(options):
+                        try:
+                            opt_scores.append(f"{o.type.name}({scores[ii]:.0f})")
+                        except Exception:
+                            opt_scores.append(f"?({scores[ii]:.0f})")
 
-                # 重要な選択（ATTACK, RETREAT, EVOLVE等）のみ表示
-                if chosen_opt.type in (OptionType.ATTACK, OptionType.RETREAT,
-                                        OptionType.EVOLVE, OptionType.ABILITY,
-                                        OptionType.END):
-                    print(f"  → {player_name}: {opt_type} (score:{score_val:.0f})")
-                    if len(opt_scores) <= 8:
-                        print(f"    候補: {', '.join(opt_scores)}")
+                    # 重要な選択のみ表示
+                    if chosen_opt.type in (OptionType.ATTACK, OptionType.RETREAT,
+                                            OptionType.EVOLVE, OptionType.ABILITY,
+                                            OptionType.ATTACH, OptionType.END):
+                        print(f"  → {player_name}: {opt_type} (score:{score_val:.0f})")
+                        if len(opt_scores) <= 10:
+                            print(f"    候補: {', '.join(opt_scores)}")
+                except Exception:
+                    pass
 
         try:
             params_cur = params_0 if (state and state.yourIndex == 0) else params_1
