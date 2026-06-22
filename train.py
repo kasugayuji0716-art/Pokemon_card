@@ -12,14 +12,16 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-FEATURE_DIM = 25
+FEATURE_DIM = 70
 
 
 def build_model(input_dim):
     return nn.Sequential(
-        nn.Linear(input_dim, 128),
+        nn.Linear(input_dim, 256),
         nn.ReLU(),
-        nn.Linear(128, 128),
+        nn.Linear(256, 256),
+        nn.ReLU(),
+        nn.Linear(256, 128),
         nn.ReLU(),
         nn.Linear(128, 1),
         nn.Sigmoid(),

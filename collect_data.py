@@ -80,15 +80,51 @@ DECKS = [
 ]
 
 MEGA_LUCARIO_ID = 678
-FEATURE_DIM = 25
+FEATURE_DIM = 70
+
+
+# ── ポケモン特徴量ヘルパー ────────────────────────────────────────────────
+
+def _poke_feats_full(p):
+    """ポケモン1体 → 5次元 [HP割合, エネ数, maxHP, 進化済み, EX級]"""
+    if p is None:
+        return [0.0, 0.0, 0.0, 0.0, 0.0]
+    return [
+        p.hp / p.maxHp if p.maxHp > 0 else 0.0,
+        min(len(p.energies), 5) / 5.0,
+        min(p.maxHp, 300) / 300.0,
+        1.0 if getattr(p, 'preEvolution', None) else 0.0,
+        1.0 if p.maxHp >= 150 else 0.0,
+    ]
+
+def _poke_feats_short(p):
+    """ポケモン1体 → 3次元 [HP割合, エネ数, maxHP]"""
+    if p is None:
+        return [0.0, 0.0, 0.0]
+    return [
+        p.hp / p.maxHp if p.maxHp > 0 else 0.0,
+        min(len(p.energies), 5) / 5.0,
+        min(p.maxHp, 300) / 300.0,
+    ]
 
 
 # ── 特徴量抽出 ─────────────────────────────────────────────────────────────
 
 def extract_features(obs):
     """
-    現在の盤面を25次元のfloat32ベクトルに変換する。
+    現在の盤面を70次元のfloat32ベクトルに変換する。
     obs.current.yourIndex を「現在選択する側」とみなす。
+
+    内訳:
+      自分アクティブ:  HP割合, エネ数, maxHP, 進化, EX, ツール, 状態異常×2  (8)
+      自分ベンチ×5:    HP割合, エネ数, maxHP, 進化, EX                     (25)
+      相手アクティブ:  HP割合, エネ数, maxHP, 進化, EX, 状態異常            (6)
+      相手ベンチ×5:    HP割合, エネ数, maxHP                               (15)
+      グローバル:      サイド×2, 手札数×2, デッキ数×2, 捨て×2,
+                      ベンチ数×2, エネ付与済, スタジアム,
+                      手札ポケモン数, 手札トレーナー数, 手札エネ数,
+                      ゲーム進行度                                         (16)
+      合計 = 70
     """
     state = obs.current
     if state is None:
@@ -101,38 +137,43 @@ def extract_features(obs):
 
     feats = []
 
-    # --- 自分のアクティブ (3次元) ---
-    a = (us.active[0] if us.active else None)
+    # --- 自分のアクティブ (8次元) ---
+    a = us.active[0] if us.active else None
+    feats += _poke_feats_full(a)
     feats += [
-        a.hp / a.maxHp if (a and a.maxHp > 0) else 0.0,
-        min(len(a.energies), 5) / 5.0 if a else 0.0,
-        1.0 if (a and a.id == MEGA_LUCARIO_ID) else 0.0,
+        min(len(getattr(a, 'tools', []) or []), 2) / 2.0 if a else 0.0,
+        1.0 if getattr(us, 'asleep', False) or getattr(us, 'confused', False)
+              or getattr(us, 'paralyzed', False) else 0.0,
+        1.0 if getattr(us, 'poisoned', False) or getattr(us, 'burned', False) else 0.0,
     ]
 
-    # --- 自分のベンチ 3体 (9次元) ---
+    # --- 自分のベンチ 5体 (25次元) ---
     bench = us.bench or []
-    for i in range(3):
+    for i in range(5):
         b = bench[i] if i < len(bench) else None
-        feats += [
-            b.hp / b.maxHp if (b and b.maxHp > 0) else 0.0,
-            min(len(b.energies), 5) / 5.0 if b else 0.0,
-            1.0 if (b and b.id == MEGA_LUCARIO_ID) else 0.0,
-        ]
+        feats += _poke_feats_full(b)
 
-    # --- 相手のアクティブ (2次元) ---
-    oa = (opp.active[0] if opp.active else None)
+    # --- 相手のアクティブ (6次元) ---
+    oa = opp.active[0] if opp.active else None
+    feats += _poke_feats_full(oa)
     feats += [
-        oa.hp / oa.maxHp if (oa and oa.maxHp > 0) else 0.0,
-        min(len(oa.energies), 5) / 5.0 if oa else 0.0,
+        1.0 if getattr(opp, 'asleep', False) or getattr(opp, 'confused', False)
+              or getattr(opp, 'paralyzed', False) or getattr(opp, 'poisoned', False)
+              or getattr(opp, 'burned', False) else 0.0,
     ]
 
-    # --- 相手のベンチ 3体 (3次元) ---
+    # --- 相手のベンチ 5体 (15次元) ---
     opp_bench = opp.bench or []
-    for i in range(3):
+    for i in range(5):
         ob = opp_bench[i] if i < len(opp_bench) else None
-        feats += [ob.hp / ob.maxHp if (ob and ob.maxHp > 0) else 0.0]
+        feats += _poke_feats_short(ob)
 
-    # --- グローバル (8次元) ---
+    # --- グローバル (16次元) ---
+    our_hand = getattr(us, 'hand', None) or []
+    n_pokemon_hand = sum(1 for c in our_hand if hasattr(c, 'id') and 21 <= c.id <= 999) / 10.0
+    n_trainer_hand = sum(1 for c in our_hand if hasattr(c, 'id') and c.id >= 1000) / 10.0
+    n_energy_hand  = sum(1 for c in our_hand if hasattr(c, 'id') and c.id <= 20) / 10.0
+
     feats += [
         len(us.prize)  / 6.0,
         len(opp.prize) / 6.0,
@@ -142,6 +183,14 @@ def extract_features(obs):
         getattr(opp, 'deckCount', 0) / 60.0,
         len(us.discard  or []) / 60.0,
         len(opp.discard or []) / 60.0,
+        len(bench)     / 5.0,
+        len(opp_bench) / 5.0,
+        1.0 if getattr(state, 'energyAttached', False) else 0.0,
+        1.0 if getattr(state, 'stadium', None) else 0.0,
+        n_pokemon_hand,
+        n_trainer_hand,
+        n_energy_hand,
+        min(len(us.discard or []) + len(opp.discard or []), 120) / 120.0,
     ]
 
     assert len(feats) == FEATURE_DIM, f"feature dim mismatch: {len(feats)}"
