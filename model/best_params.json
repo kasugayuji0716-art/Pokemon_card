@@ -1,0 +1,19 @@
+{
+  "evolve": 15112.456869231373,
+  "ability": 4419.470284400103,
+  "attach_mega": 10963.505619679163,
+  "attach_active": 10894.94874832339,
+  "attach_bench": 2328.8075702943875,
+  "play": 8565.213823160422,
+  "attack_base": 2717.485901199247,
+  "retreat_score": 320.8744687565979,
+  "retreat_hp_mega": 0.8341414051343232,
+  "retreat_hp_low": 0.1956173044149895,
+  "emergency_mult": 716.1910638213558,
+  "emergency_thresh": 21.077956670219105,
+  "mega_bonus": 105945.28198340216,
+  "energy_weight": 1422.5789208719852,
+  "hp_weight": 0.3909582786566739,
+  "fitness": 0.62,
+  "generation": 79
+}
