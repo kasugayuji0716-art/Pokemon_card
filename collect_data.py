@@ -11,7 +11,7 @@ import random
 import numpy as np
 
 from cg.game import battle_start, battle_select, battle_finish
-from cg.api import to_observation_class, OptionType, SelectContext, AreaType
+from cg.api import to_observation_class, OptionType, SelectContext, AreaType, all_card_data, all_attack
 
 # ── デッキ定義 ────────────────────────────────────────────────────────────
 
@@ -75,7 +75,31 @@ DECKS = [
     DECK_LIGHTNING,                                 # 7.5%
 ]
 
-FEATURE_DIM = 70
+FEATURE_DIM = 81
+
+
+# ── カードDB構築（起動時1回だけ） ─────────────────────────────────────────
+
+def _build_card_db():
+    db = {}
+    try:
+        for c in all_card_data():
+            db[c.cardId] = c
+    except Exception:
+        pass
+    return db
+
+def _build_attack_db():
+    db = {}
+    try:
+        for a in all_attack():
+            db[a.attackId] = a
+    except Exception:
+        pass
+    return db
+
+CARD_DB   = _build_card_db()
+ATTACK_DB = _build_attack_db()
 
 
 # ── カードID分類ヘルパー ──────────────────────────────────────────────────
@@ -92,6 +116,71 @@ def _card_composition(cards):
     trainer = sum(1 for c in cards if hasattr(c, 'id') and _is_trainer(c.id))
     energy = sum(1 for c in cards if hasattr(c, 'id') and _is_energy(c.id))
     return poke, trainer, energy
+
+
+# ── 戦術的特徴量ヘルパー ──────────────────────────────────────────────────
+
+def _get_card_data(pokemon):
+    """ポケモンオブジェクト → CardData (なければNone)"""
+    if pokemon is None:
+        return None
+    return CARD_DB.get(pokemon.id)
+
+def _best_attack_damage(pokemon):
+    """ポケモンの最大攻撃力を返す"""
+    cd = _get_card_data(pokemon)
+    if cd is None:
+        return 0
+    best = 0
+    for aid in (cd.attacks or []):
+        atk = ATTACK_DB.get(aid)
+        if atk and atk.damage > best:
+            best = atk.damage
+    return best
+
+def _can_attack(pokemon):
+    """現在のエネルギーで攻撃可能か (簡易判定: エネ数 >= 攻撃コスト)"""
+    cd = _get_card_data(pokemon)
+    if cd is None or pokemon is None:
+        return False
+    attached = len(pokemon.energies)
+    for aid in (cd.attacks or []):
+        atk = ATTACK_DB.get(aid)
+        if atk and attached >= len(atk.energies):
+            return True
+    return False
+
+def _affordable_damage(pokemon):
+    """支払い可能な攻撃の最大ダメージ"""
+    cd = _get_card_data(pokemon)
+    if cd is None or pokemon is None:
+        return 0
+    attached = len(pokemon.energies)
+    best = 0
+    for aid in (cd.attacks or []):
+        atk = ATTACK_DB.get(aid)
+        if atk and attached >= len(atk.energies) and atk.damage > best:
+            best = atk.damage
+    return best
+
+def _weakness_match(attacker, defender):
+    """attackerのタイプがdefenderの弱点と一致するか"""
+    acd = _get_card_data(attacker)
+    dcd = _get_card_data(defender)
+    if acd is None or dcd is None or dcd.weakness is None:
+        return False
+    return acd.energyType == dcd.weakness
+
+def _prize_risk(pokemon):
+    """撃破時に相手が得るサイド枚数 (0=不在, 1=通常, 2=ex, 3=megaEx)"""
+    cd = _get_card_data(pokemon)
+    if cd is None:
+        return 0
+    if cd.megaEx:
+        return 3
+    if cd.ex:
+        return 2
+    return 1
 
 
 # ── 特徴量抽出 ─────────────────────────────────────────────────────────────
@@ -188,17 +277,41 @@ def extract_features(obs):
         len(opp_bench) / 5.0,                                           # 10
         1.0 if getattr(state, 'energyAttached', False) else 0.0,        # 11
         1.0 if getattr(state, 'stadium', None) else 0.0,                # 12
-        min(getattr(state, 'turn', 0), 30) / 30.0,                     # 13 ★新
-        1.0 if getattr(state, 'firstPlayer', 0) == our_idx else 0.0,   # 14 ★新
-        1.0 if getattr(state, 'supporterPlayed', False) else 0.0,      # 15 ★新
-        1.0 if getattr(state, 'retreated', False) else 0.0,            # 16 ★新
+        min(getattr(state, 'turn', 0), 30) / 30.0,                     # 13
+        1.0 if getattr(state, 'firstPlayer', 0) == our_idx else 0.0,   # 14
+        1.0 if getattr(state, 'supporterPlayed', False) else 0.0,      # 15
+        1.0 if getattr(state, 'retreated', False) else 0.0,            # 16
         h_poke    / 10.0,                                               # 17
         h_trainer / 10.0,                                               # 18
         h_energy  / 10.0,                                               # 19
-        od_poke    / 30.0,                                              # 20 ★新
-        od_trainer / 30.0,                                              # 21 ★新
-        od_energy  / 30.0,                                              # 22 ★新
-        d_energy   / 30.0,                                              # 23 ★新
+        od_poke    / 30.0,                                              # 20
+        od_trainer / 30.0,                                              # 21
+        od_energy  / 30.0,                                              # 22
+        d_energy   / 30.0,                                              # 23
+    ]
+
+    # --- 戦術的特徴量 (11次元) --- CardData参照
+    our_dmg  = _affordable_damage(a)     # 自分が出せるダメージ
+    opp_dmg  = _affordable_damage(oa)    # 相手が出せるダメージ
+    opp_hp   = oa.hp if oa else 0
+    our_hp   = a.hp  if a  else 0
+
+    # 弱点考慮のダメージ (x2)
+    our_eff = our_dmg * 2 if _weakness_match(a, oa) else our_dmg
+    opp_eff = opp_dmg * 2 if _weakness_match(oa, a) else opp_dmg
+
+    feats += [
+        min(our_dmg, 300) / 300.0,                                      # 24: 攻撃力
+        min(opp_dmg, 300) / 300.0,                                      # 25: 相手攻撃力
+        1.0 if _can_attack(a) else 0.0,                                 # 26: 攻撃可能
+        1.0 if _can_attack(oa) else 0.0,                                # 27: 相手攻撃可能
+        1.0 if _weakness_match(a, oa) else 0.0,                         # 28: 弱点突ける
+        1.0 if _weakness_match(oa, a) else 0.0,                         # 29: 弱点突かれる
+        1.0 if (opp_hp > 0 and our_eff >= opp_hp) else 0.0,            # 30: KO可能！
+        1.0 if (our_hp > 0 and opp_eff >= our_hp) else 0.0,            # 31: KOされうる
+        _prize_risk(a)  / 3.0,                                          # 32: 自分サイドリスク
+        _prize_risk(oa) / 3.0,                                          # 33: 相手サイド価値
+        min((_get_card_data(a) or type('', (), {'retreatCost': 0})).retreatCost, 5) / 5.0,  # 34: にげるコスト
     ]
 
     assert len(feats) == FEATURE_DIM, f"feature dim mismatch: {len(feats)}"

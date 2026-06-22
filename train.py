@@ -21,15 +21,15 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-FEATURE_DIM = 70
+FEATURE_DIM = 81
 
 
 def build_model(input_dim):
     return nn.Sequential(
-        nn.Linear(input_dim, 128),
+        nn.Linear(input_dim, 256),
         nn.ReLU(),
         nn.Dropout(0.3),
-        nn.Linear(128, 128),
+        nn.Linear(256, 128),
         nn.ReLU(),
         nn.Dropout(0.2),
         nn.Linear(128, 64),
