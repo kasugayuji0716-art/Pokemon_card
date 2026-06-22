@@ -75,7 +75,7 @@ DECKS = [
     DECK_LIGHTNING,                                 # 7.5%
 ]
 
-FEATURE_DIM = 81
+FEATURE_DIM = 96
 
 
 # ── カードDB構築（起動時1回だけ） ─────────────────────────────────────────
@@ -138,28 +138,38 @@ def _best_attack_damage(pokemon):
             best = atk.damage
     return best
 
+def _can_afford_attack(attached_energies, required_energies):
+    """エネルギータイプを考慮した攻撃コスト判定。COLORLESS(0)は任意タイプで支払可。"""
+    from collections import Counter
+    req = Counter(required_energies)
+    att = Counter(attached_energies)
+    colorless_needed = req.pop(0, 0)  # EnergyType.COLORLESS = 0
+    for etype, count in req.items():
+        if att[etype] < count:
+            return False
+        att[etype] -= count
+    return sum(att.values()) >= colorless_needed
+
 def _can_attack(pokemon):
-    """現在のエネルギーで攻撃可能か (簡易判定: エネ数 >= 攻撃コスト)"""
+    """現在のエネルギーで攻撃可能か（タイプ一致チェック付き）"""
     cd = _get_card_data(pokemon)
     if cd is None or pokemon is None:
         return False
-    attached = len(pokemon.energies)
     for aid in (cd.attacks or []):
         atk = ATTACK_DB.get(aid)
-        if atk and attached >= len(atk.energies):
+        if atk and _can_afford_attack(pokemon.energies, atk.energies):
             return True
     return False
 
 def _affordable_damage(pokemon):
-    """支払い可能な攻撃の最大ダメージ"""
+    """支払い可能な攻撃の最大ダメージ（タイプ一致チェック付き）"""
     cd = _get_card_data(pokemon)
     if cd is None or pokemon is None:
         return 0
-    attached = len(pokemon.energies)
     best = 0
     for aid in (cd.attacks or []):
         atk = ATTACK_DB.get(aid)
-        if atk and attached >= len(atk.energies) and atk.damage > best:
+        if atk and _can_afford_attack(pokemon.energies, atk.energies) and atk.damage > best:
             best = atk.damage
     return best
 
@@ -172,10 +182,12 @@ def _weakness_match(attacker, defender):
     return acd.energyType == dcd.weakness
 
 def _prize_risk(pokemon):
-    """撃破時に相手が得るサイド枚数 (0=不在, 1=通常, 2=ex, 3=megaEx)"""
+    """撃破時に相手が得るサイド枚数 (0=不在/None, 1=通常, 2=ex, 3=megaEx)"""
+    if pokemon is None:
+        return 0
     cd = _get_card_data(pokemon)
     if cd is None:
-        return 0
+        return 1  # 不明でもポケモンなら最低1枚
     if cd.megaEx:
         return 3
     if cd.ex:
@@ -187,15 +199,17 @@ def _prize_risk(pokemon):
 
 def extract_features(obs):
     """
-    現在の盤面を70次元のfloat32ベクトルに変換。
+    現在の盤面を96次元のfloat32ベクトルに変換。
 
     内訳:
-      自分アクティブ:  HP, エネ, maxHP, 進化, ツール, 状態×2        (7)
-      自分ベンチ×5:    HP, エネ, maxHP, 進化                        (20)
-      相手アクティブ:  HP, エネ, maxHP, 進化, 状態                   (5)
-      相手ベンチ×5:    HP, エネ, maxHP                               (15)
-      グローバル:      23項目                                        (23)
-      合計 = 70
+      自分アクティブ:  HP, エネ, maxHP, 進化, ツール, 状態×2             (7)
+      自分ベンチ×5:    HP, エネ, maxHP, 進化                             (20)
+      相手アクティブ:  HP, エネ, maxHP, 進化, 状態                        (5)
+      相手ベンチ×5:    HP, エネ, maxHP                                    (15)
+      グローバル:      サイド,手札,デッキ,捨札,ベンチ数,ターン等           (23)
+      戦術:           攻撃力,攻撃可否,弱点,KO判定,サイドリスク,退却コスト  (11)
+      戦略:           ベンチ攻撃準備,KO計画,ボス枚数,進化手札,相手進化     (15)
+      合計 = 96
     """
     state = obs.current
     if state is None:
@@ -213,7 +227,7 @@ def extract_features(obs):
     feats += [
         a.hp / a.maxHp if (a and a.maxHp > 0) else 0.0,
         min(len(a.energies), 8) / 8.0 if a else 0.0,
-        min(getattr(a, 'maxHp', 0), 300) / 300.0 if a else 0.0,
+        min(getattr(a, 'maxHp', 0), 350) / 350.0 if a else 0.0,
         1.0 if (a and getattr(a, 'preEvolution', None)) else 0.0,
         min(len(getattr(a, 'tools', None) or []), 2) / 2.0 if a else 0.0,
         1.0 if (getattr(us, 'asleep', False) or getattr(us, 'confused', False)
@@ -229,7 +243,7 @@ def extract_features(obs):
         feats += [
             b.hp / b.maxHp if (b and b.maxHp > 0) else 0.0,
             min(len(b.energies), 8) / 8.0 if b else 0.0,
-            min(getattr(b, 'maxHp', 0), 300) / 300.0 if b else 0.0,
+            min(getattr(b, 'maxHp', 0), 350) / 350.0 if b else 0.0,
             1.0 if (b and getattr(b, 'preEvolution', None)) else 0.0,
         ]
 
@@ -238,7 +252,7 @@ def extract_features(obs):
     feats += [
         oa.hp / oa.maxHp if (oa and oa.maxHp > 0) else 0.0,
         min(len(oa.energies), 8) / 8.0 if oa else 0.0,
-        min(getattr(oa, 'maxHp', 0), 300) / 300.0 if oa else 0.0,
+        min(getattr(oa, 'maxHp', 0), 350) / 350.0 if oa else 0.0,
         1.0 if (oa and getattr(oa, 'preEvolution', None)) else 0.0,
         1.0 if (getattr(opp, 'asleep', False) or getattr(opp, 'confused', False)
                 or getattr(opp, 'paralyzed', False) or getattr(opp, 'poisoned', False)
@@ -252,7 +266,7 @@ def extract_features(obs):
         feats += [
             ob.hp / ob.maxHp if (ob and ob.maxHp > 0) else 0.0,
             min(len(ob.energies), 8) / 8.0 if ob else 0.0,
-            min(getattr(ob, 'maxHp', 0), 300) / 300.0 if ob else 0.0,
+            min(getattr(ob, 'maxHp', 0), 350) / 350.0 if ob else 0.0,
         ]
 
     # --- グローバル (23次元) ---
@@ -281,9 +295,9 @@ def extract_features(obs):
         1.0 if getattr(state, 'firstPlayer', 0) == our_idx else 0.0,   # 14
         1.0 if getattr(state, 'supporterPlayed', False) else 0.0,      # 15
         1.0 if getattr(state, 'retreated', False) else 0.0,            # 16
-        h_poke    / 10.0,                                               # 17
-        h_trainer / 10.0,                                               # 18
-        h_energy  / 10.0,                                               # 19
+        min(h_poke,    10) / 10.0,                                         # 17
+        min(h_trainer, 10) / 10.0,                                         # 18
+        min(h_energy,  10) / 10.0,                                         # 19
         od_poke    / 30.0,                                              # 20
         od_trainer / 30.0,                                              # 21
         od_energy  / 30.0,                                              # 22
@@ -301,8 +315,8 @@ def extract_features(obs):
     opp_eff = opp_dmg * 2 if _weakness_match(oa, a) else opp_dmg
 
     feats += [
-        min(our_dmg, 300) / 300.0,                                      # 24: 攻撃力
-        min(opp_dmg, 300) / 300.0,                                      # 25: 相手攻撃力
+        min(our_dmg, 350) / 350.0,                                      # 24: 攻撃力
+        min(opp_dmg, 350) / 350.0,                                      # 25: 相手攻撃力
         1.0 if _can_attack(a) else 0.0,                                 # 26: 攻撃可能
         1.0 if _can_attack(oa) else 0.0,                                # 27: 相手攻撃可能
         1.0 if _weakness_match(a, oa) else 0.0,                         # 28: 弱点突ける
@@ -311,8 +325,74 @@ def extract_features(obs):
         1.0 if (our_hp > 0 and opp_eff >= our_hp) else 0.0,            # 31: KOされうる
         _prize_risk(a)  / 3.0,                                          # 32: 自分サイドリスク
         _prize_risk(oa) / 3.0,                                          # 33: 相手サイド価値
-        min((_get_card_data(a) or type('', (), {'retreatCost': 0})).retreatCost, 5) / 5.0,  # 34: にげるコスト
+        min(getattr(_get_card_data(a), 'retreatCost', 0), 5) / 5.0,  # 34: にげるコスト
     ]
+
+    # --- 戦略的特徴量 (15次元) --- 人間が考える展開予測
+    opp_all_pokemon = ([oa] if oa else []) + [ob for ob in (opp_bench or []) if ob]
+    our_all_pokemon = ([a]  if a  else []) + [b  for b  in (bench or [])     if b ]
+
+    # A. 自分ベンチの攻撃準備度 ×5  (35-39)
+    for i in range(5):
+        b = bench[i] if i < len(bench) else None
+        feats.append(1.0 if _can_attack(b) else 0.0)
+
+    # B. 勝利までの最短KO数 (40-41)
+    our_remaining  = len(us.prize)  # 自分が取るべき残りサイド枚数
+    opp_remaining  = len(opp.prize)
+    # 相手ポケモンのサイド価値を降順ソート → 最短何体で取り切れるか
+    opp_prize_vals = sorted([_prize_risk(p) for p in opp_all_pokemon], reverse=True)
+    kos_needed = 0
+    total_prizes = 0
+    for pv in opp_prize_vals:
+        if total_prizes >= our_remaining:
+            break
+        total_prizes += pv
+        kos_needed += 1
+    if total_prizes < our_remaining:
+        kos_needed = 6  # 場のポケモンだけでは足りない
+    feats.append(min(kos_needed, 6) / 6.0)
+
+    our_prize_vals = sorted([_prize_risk(p) for p in our_all_pokemon], reverse=True)
+    opp_kos_needed = 0
+    total_prizes = 0
+    for pv in our_prize_vals:
+        if total_prizes >= opp_remaining:
+            break
+        total_prizes += pv
+        opp_kos_needed += 1
+    if total_prizes < opp_remaining:
+        opp_kos_needed = 6
+    feats.append(min(opp_kos_needed, 6) / 6.0)
+
+    # C. ボスの司令カウント (42-43)  ID=1182
+    our_boss_used = sum(1 for c in our_discard if hasattr(c, 'id') and c.id == 1182)
+    opp_boss_used = sum(1 for c in opp_discard if hasattr(c, 'id') and c.id == 1182)
+    feats.append(our_boss_used / 4.0)
+    feats.append(opp_boss_used / 4.0)
+
+    # D. 手札に進化カードがあるか (44) ※アクティブも含む
+    field_names = set()
+    for p in ([a] + list(bench)):
+        if p is None:
+            continue
+        cd = _get_card_data(p)
+        if cd:
+            field_names.add(cd.name)
+    has_evo_in_hand = 0.0
+    for c in our_hand:
+        if not hasattr(c, 'id'):
+            continue
+        cd = CARD_DB.get(c.id)
+        if cd and cd.evolvesFrom and cd.evolvesFrom in field_names:
+            has_evo_in_hand = 1.0
+            break
+    feats.append(has_evo_in_hand)
+
+    # E. 相手ベンチの進化済みフラグ ×5 (45-49)
+    for i in range(5):
+        ob = opp_bench[i] if i < len(opp_bench) else None
+        feats.append(1.0 if (ob and getattr(ob, 'preEvolution', None)) else 0.0)
 
     assert len(feats) == FEATURE_DIM, f"feature dim mismatch: {len(feats)}"
     return feats
